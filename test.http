@@ -1,0 +1,7 @@
+POST http://localhost:3000/api/posts
+Content-Type: application/json
+
+{
+  "post_url": "hahwww.instagram.com/p/Cxy123Abc/",
+  "post_date": "2025-08-27T10:00:00Z"
+}
