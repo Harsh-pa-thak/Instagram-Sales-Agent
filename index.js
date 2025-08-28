@@ -1,6 +1,7 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
+require('dotenv').config(); // <-- 1. ADD THIS LINE AT THE TOP
 
 // Create the Express app
 const app = express();
@@ -9,11 +10,12 @@ const port = 3000;
 
 // Database connection pool
 const pool = new Pool({
-  user: 'postgres',
-  host: 'localhost',
-  database: 'instagram_agent_db',
-  password: '1234', // <-- IMPORTANT: UPDATE THIS
-  port: 5432,
+  // Use the DATABASE_URL from the Render environment
+  connectionString: process.env.DATABASE_URL,
+  // Add SSL configuration for connecting to Neon
+  ssl: { // <-- 2. ADD THIS SSL OBJECT
+    rejectUnauthorized: false
+  }
 });
 
 // Test route
@@ -41,5 +43,5 @@ app.post('/api/posts', async (req, res) => {
 
 // Start the server
 app.listen(port, () => {
-  console.log(`Server is listening at http://localhost:${port}`);
+  console.log(`Server is listening on port ${port}`);
 });
