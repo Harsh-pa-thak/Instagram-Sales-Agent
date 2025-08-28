@@ -1,7 +1,8 @@
-POST http://localhost:3000/api/posts
+### Add a new Instagram post to the live server
+POST https://instagram-sales-agent.onrender.com/api/posts
 Content-Type: application/json
 
 {
-  "post_url": "hahwww.instagram.com/p/Cxy123Abc/",
-  "post_date": "2025-08-27T10:00:00Z"
+  "post_url": "https://www.instagram.com/p/final-test/",
+  "post_date": "2025-08-28T12:00:00Z"
 }

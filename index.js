@@ -22,6 +22,25 @@ const pool = new Pool({
 app.get('/', (req, res) => {
   res.send('Server is running and accessible!');
 });
+// --- Webhook Verification Endpoint ---
+app.get('/api/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  // Check if a token and mode is in the query string of the request
+  if (mode && token) {
+    // Check the mode and token sent are correct
+    if (mode === 'subscribe' && token === 'supersecrettoken123') {
+      // Respond with the challenge token from the request
+      console.log('WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
+    } else {
+      // Respond with '403 Forbidden' if verify tokens do not match
+      res.sendStatus(403);
+    }
+  }
+});
 
 // API endpoint to add a new post
 app.post('/api/posts', async (req, res) => {
