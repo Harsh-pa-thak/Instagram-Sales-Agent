@@ -16,9 +16,7 @@ const upload = multer({ dest: 'uploads/' }); // Configure multer for file upload
 
 // Database connection pool
 const pool = new Pool({
-  // Use the DATABASE_URL from the Render environment
   connectionString: process.env.DATABASE_URL,
-  // Add SSL configuration for connecting to Neon
   ssl: {
     rejectUnauthorized: false
   }
@@ -26,24 +24,34 @@ const pool = new Pool({
 
 // --- Main Routes ---
 
-// Root route to confirm the server is running
 app.get('/', (req, res) => {
   res.send('Server is running and accessible!');
 });
 
-// Route to serve the HTML page for uploading files
 app.get('/upload', (req, res) => {
   res.sendFile(__dirname + '/upload.html');
 });
 
 // --- API Endpoints ---
-// API endpoint to add a new post (from Make.com or n8n)
+
+// NEW: API endpoint to GET all posts for the dashboard
+app.get('/api/posts', async (req, res) => {
+  try {
+    const sql = 'SELECT * FROM instagram_posts ORDER BY created_at DESC';
+    const result = await pool.query(sql);
+    res.json(result.rows); // Send the list of posts as JSON
+  } catch (error) {
+    console.error('Database error fetching posts:', error);
+    res.status(500).send({ error: 'Failed to fetch posts.' });
+  }
+});
+
+// API endpoint to ADD a new post (from Make.com or n8n)
 app.post('/api/posts', async (req, res) => {
   const { post_url, post_date } = req.body;
   if (!post_url) {
     return res.status(400).send({ error: 'Post URL is required.' });
   }
-
   console.log('Received request to add post:', post_url);
   try {
     const sql = 'INSERT INTO instagram_posts (post_url, post_date) VALUES ($1, $2) RETURNING *';
@@ -55,16 +63,13 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-
 // API endpoint to upload a CSV of leads from the HTML form
 app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
   if (!req.file) {
     return res.status(400).send('No file uploaded.');
   }
-
   const results = [];
   const filePath = req.file.path;
-
   fs.createReadStream(filePath)
     .pipe(csv())
     .on('data', (data) => results.push(data))
@@ -74,12 +79,11 @@ app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
           const username = lead.username;
           const profileUrl = lead.profileUrl;
           if (username && profileUrl) {
-            // Insert the lead, but do nothing if the username already exists
             const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
             await pool.query(sql, [username, profileUrl]);
           }
         }
-        fs.unlinkSync(filePath); // Clean up the uploaded file from the server
+        fs.unlinkSync(filePath);
         res.status(200).send({ message: `${results.length} leads processed and saved successfully!` });
       } catch (error) {
         console.error('Database error during CSV import:', error);
