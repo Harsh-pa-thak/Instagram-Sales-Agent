@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Upload Leads</title>
+  </head>
+  <body>
+    <h1>Upload Instagram Leads CSV</h1>
+    <form
+      action="/api/upload-leads"
+      method="POST"
+      enctype="multipart/form-data"
+    >
+      <input type="file" name="leadsFile" accept=".csv" required />
+      <button type="submit">Upload</button>
+    </form>
+  </body>
+</html>
