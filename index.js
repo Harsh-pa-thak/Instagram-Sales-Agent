@@ -4,17 +4,21 @@ const { Pool } = require('pg');
 const multer = require('multer');
 const fs = require('fs');
 const csv = require('csv-parser');
+const cors = require('cors');
 require('dotenv').config();
 
 // Create the Express app
 const app = express();
 app.use(express.json()); // Middleware to parse JSON bodies
+app.use(cors()); // Middleware to enable Cross-Origin Resource Sharing
 const port = 3000;
-const upload = multer({ dest: 'uploads/' }); // Configure multer
+const upload = multer({ dest: 'uploads/' }); // Configure multer for file uploads
 
 // Database connection pool
 const pool = new Pool({
+  // Use the DATABASE_URL from the Render environment
   connectionString: process.env.DATABASE_URL,
+  // Add SSL configuration for connecting to Neon
   ssl: {
     rejectUnauthorized: false
   }
@@ -22,19 +26,19 @@ const pool = new Pool({
 
 // --- Main Routes ---
 
-// Test route
+// Root route to confirm the server is running
 app.get('/', (req, res) => {
   res.send('Server is running and accessible!');
 });
 
-// Route to serve the upload page
+// Route to serve the HTML page for uploading files
 app.get('/upload', (req, res) => {
   res.sendFile(__dirname + '/upload.html');
 });
 
 // --- API Endpoints ---
 
-// API endpoint to add a new post from Make.com
+// API endpoint to add a new post (from Make.com or n8n)
 app.post('/api/posts', async (req, res) => {
   const { post_url, post_date } = req.body;
   if (!post_url) {
@@ -52,7 +56,7 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// API endpoint to upload a CSV of leads
+// API endpoint to upload a CSV of leads from the HTML form
 app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
   if (!req.file) {
     return res.status(400).send('No file uploaded.');
@@ -70,11 +74,12 @@ app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
           const username = lead.username;
           const profileUrl = lead.profileUrl;
           if (username && profileUrl) {
+            // Insert the lead, but do nothing if the username already exists
             const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
             await pool.query(sql, [username, profileUrl]);
           }
         }
-        fs.unlinkSync(filePath); // Clean up the uploaded file
+        fs.unlinkSync(filePath); // Clean up the uploaded file from the server
         res.status(200).send({ message: `${results.length} leads processed and saved successfully!` });
       } catch (error) {
         console.error('Database error during CSV import:', error);
@@ -82,7 +87,6 @@ app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
       }
     });
 });
-
 
 // Start the server
 app.listen(port, () => {
