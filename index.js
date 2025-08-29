@@ -37,7 +37,6 @@ app.get('/upload', (req, res) => {
 });
 
 // --- API Endpoints ---
-
 // API endpoint to add a new post (from Make.com or n8n)
 app.post('/api/posts', async (req, res) => {
   const { post_url, post_date } = req.body;
@@ -55,6 +54,7 @@ app.post('/api/posts', async (req, res) => {
     res.status(500).send({ error: 'Failed to add post.' });
   }
 });
+
 
 // API endpoint to upload a CSV of leads from the HTML form
 app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
