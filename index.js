@@ -86,7 +86,7 @@ app.post('/api/scrape', async (req, res) => {
     await axios.post(endpoint, {}, {
       headers: {
         'Content-Type': 'application/json',
-        'X-Phantombuster-Key': RfrqZMWA99KyCdmUFzFBADM3qhaaAfyb02nL6fn7Qu4
+        'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
       },
       data: {
         argument: JSON.stringify({
