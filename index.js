@@ -76,7 +76,7 @@ app.post('/api/scrape', async (req, res) => {
 
   try {
     // IMPORTANT: Replace this with the ID of your "Post Likers Export" Phantom
-    const PHANTOM_ID = '2487161782151911';
+    const PHANTOM_ID = '6340322393587235';
     const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
 
     if (!PHANTOM_BUSTER_API_KEY) {
