@@ -77,7 +77,7 @@ app.post('/api/scrape', async (req, res) => {
   }
 
   try {
-    const PHANTOM_ID = '2487161782151911'; // Your Phantom ID
+    const PHANTOM_ID = '2487161782151911';
     const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
 
     if (!PHANTOM_BUSTER_API_KEY) {

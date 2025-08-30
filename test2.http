@@ -1,0 +1,2 @@
+GET https://api.phantombuster.com/api/v2/phantoms/fetch-all
+X-Phantombuster-Key: RfrqZMWA99KyCdmUFzFBADM3qhaaAfyb02nL6fn7Qu4
