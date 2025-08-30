@@ -5,7 +5,7 @@ const multer = require('multer');
 const fs = require('fs');
 const csv = require('csv-parser');
 const cors = require('cors');
-const axios = require('axios'); // <-- ADD THIS FOR PHANTOM BUSTER
+const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
@@ -64,10 +64,12 @@ app.post('/api/posts', async (req, res) => {
 
 // UPLOAD a CSV of leads
 app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
-  // ... (your existing upload code)
+    // This assumes you have the logic for this endpoint already. If not, we can add it.
+    // For now, focusing on the scrape endpoint.
+    res.status(501).send('Upload endpoint not fully implemented in this version.');
 });
 
-// --- NEW: API endpoint to trigger a Phantom Buster scrape ---
+// API endpoint to trigger a Phantom Buster scrape
 app.post('/api/scrape', async (req, res) => {
   const { post_url } = req.body;
   if (!post_url) {
@@ -75,8 +77,7 @@ app.post('/api/scrape', async (req, res) => {
   }
 
   try {
-    // IMPORTANT: Replace this with the ID of your "Post Likers Export" Phantom
-    const PHANTOM_ID = '2487161782151911';
+    const PHANTOM_ID = '2487161782151911'; // Your Phantom ID
     const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
 
     if (!PHANTOM_BUSTER_API_KEY) {
@@ -85,18 +86,19 @@ app.post('/api/scrape', async (req, res) => {
 
     const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
 
-    // Make the API call to Phantom Buster
-    await axios.post(endpoint, null, {
-        headers: {
-            'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY,
-            'Content-Type': 'application/json'
-        },
-        data: {
-            argument: JSON.stringify({
-                postUrls: [post_url]
-            })
+    // --- CORRECTED API CALL STRUCTURE ---
+    await axios.post(endpoint, 
+      {
+        argument: {
+          postUrls: [post_url]
         }
-    });
+      }, 
+      {
+        headers: {
+          'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
+        }
+      }
+    );
 
     res.status(200).send({ message: `Scraping job started for ${post_url}` });
 
