@@ -70,6 +70,7 @@ app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
 });
 
 // API endpoint to trigger a Phantom Buster scrape
+// API endpoint to trigger a Phantom Buster scrape
 app.post('/api/scrape', async (req, res) => {
   const { post_url } = req.body;
   if (!post_url) {
@@ -77,7 +78,7 @@ app.post('/api/scrape', async (req, res) => {
   }
 
   try {
-    const PHANTOM_ID = '2487161782151911';
+    const PHANTOM_ID = '2487161782151911'; // Your confirmed Phantom ID
     const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
 
     if (!PHANTOM_BUSTER_API_KEY) {
@@ -86,19 +87,18 @@ app.post('/api/scrape', async (req, res) => {
 
     const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
 
-    // --- CORRECTED API CALL STRUCTURE ---
-    await axios.post(endpoint, 
-      {
-        argument: {
-          postUrls: [post_url]
-        }
-      }, 
-      {
-        headers: {
-          'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
-        }
+    // A more explicit and robust way to structure the API call
+    const payload = {
+      argument: {
+        postUrls: [post_url]
       }
-    );
+    };
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
+    };
+
+    await axios.post(endpoint, payload, { headers: headers });
 
     res.status(200).send({ message: `Scraping job started for ${post_url}` });
 
@@ -107,7 +107,6 @@ app.post('/api/scrape', async (req, res) => {
     res.status(500).send({ error: 'Failed to launch Phantom Buster job.' });
   }
 });
-
 
 // Start the server
 app.listen(port, () => {
