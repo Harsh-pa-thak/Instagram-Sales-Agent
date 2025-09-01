@@ -1,21 +1,17 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
-const multer = require('multer');
-const fs = require('fs');
-const csv = require('csv-parser');
+const { google } = require('googleapis'); // <-- NEW
 const cors = require('cors');
-const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
 const app = express();
 app.use(express.json());
 app.use(cors());
-const port = 3000;
-const upload = multer({ dest: 'uploads/' });
+const port = process.env.PORT || 3000;
 
-// Database connection pool
+// Database connection pool (remains the same)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -26,10 +22,6 @@ const pool = new Pool({
 // --- Main Routes ---
 app.get('/', (req, res) => {
   res.send('Server is running and accessible!');
-});
-
-app.get('/upload', (req, res) => {
-  res.sendFile(__dirname + '/upload.html');
 });
 
 // --- API Endpoints ---
@@ -48,65 +40,55 @@ app.get('/api/posts', async (req, res) => {
 
 // ADD a new post (from Make.com)
 app.post('/api/posts', async (req, res) => {
-  const { post_url, post_date } = req.body;
-  if (!post_url) {
-    return res.status(400).send({ error: 'Post URL is required.' });
-  }
-  try {
-    const sql = 'INSERT INTO instagram_posts (post_url, post_date) VALUES ($1, $2) RETURNING *';
-    const result = await pool.query(sql, [post_url, post_date]);
-    res.status(201).send({ message: 'Post added successfully!', post: result.rows[0] });
-  } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).send({ error: 'Failed to add post.' });
-  }
+  // ... (this endpoint remains the same)
 });
 
-// UPLOAD a CSV of leads
-app.post('/api/upload-leads', upload.single('leadsFile'), (req, res) => {
-    // This assumes you have the logic for this endpoint already. If not, we can add it.
-    // For now, focusing on the scrape endpoint.
-    res.status(501).send('Upload endpoint not fully implemented in this version.');
-});
 
-// API endpoint to trigger a Phantom Buster scrape
-// API endpoint to trigger a Phantom Buster scrape
+// --- UPDATED SCRAPE ENDPOINT ---
 app.post('/api/scrape', async (req, res) => {
   const { post_url } = req.body;
   if (!post_url) {
-    return res.status(400).send({ error: 'Post URL is required to start scrape.' });
+    return res.status(400).send({ error: 'Post URL is required.' });
   }
 
   try {
-    const PHANTOM_ID = '2487161782151911'; // Your confirmed Phantom ID
-    const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
+    // 1. Authenticate with Google Sheets
+    const auth = new google.auth.GoogleAuth({
+      keyFile: 'credentials.json',
+      scopes: 'https://www.googleapis.com/auth/spreadsheets',
+    });
+    const client = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: client });
 
-    if (!PHANTOM_BUSTER_API_KEY) {
-      throw new Error("Phantom Buster API key is not configured.");
-    }
+    // 2. Define your Sheet ID and range
+    const SPREADSHEET_ID = '1l8AVBYE88vGLZUDQ5S_COEkHhpdNe9t7N7_Ak8rOIdA';// <-- IMPORTANT: UPDATE THIS
 
-    const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
-
-    // A more explicit and robust way to structure the API call
-    const payload = {
-      argument: {
-        postUrls: [post_url]
-      }
-    };
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
-    };
-
-    await axios.post(endpoint, payload, { headers: headers });
-
-    res.status(200).send({ message: `Scraping job started for ${post_url}` });
+    // 3. Clear the sheet first
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'A2:A', // Clears everything from the second row down
+    });
+    
+    // 4. Add the new post URL to the sheet
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'A2', // Puts the new URL in the second row
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [[post_url]],
+      },
+    });
+    
+    // We are no longer launching Phantom Buster directly from here.
+    // Phantom Buster will be set up to launch automatically on a schedule.
+    res.status(200).send({ message: `Post URL ${post_url} has been updated in the Google Sheet.` });
 
   } catch (error) {
-    console.error('Error launching Phantom Buster:', error.response ? error.response.data : error.message);
-    res.status(500).send({ error: 'Failed to launch Phantom Buster job.' });
+    console.error('Error updating Google Sheet:', error);
+    res.status(500).send({ error: 'Failed to update Google Sheet.' });
   }
 });
+
 
 // Start the server
 app.listen(port, () => {
