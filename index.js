@@ -1,15 +1,14 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
-const { google } = require('googleapis');
 const cors = require('cors');
+const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
 const app = express();
 app.use(express.json());
 app.use(cors());
-// Use Render's port if available, otherwise default to 3000
 const port = process.env.PORT || 3000;
 
 // Database connection pool
@@ -19,7 +18,9 @@ const pool = new Pool({
 });
 
 // --- Main Route ---
-app.get('/', (req, res) => res.send('Server is running!'));
+app.get('/', (req, res) => {
+  res.send('Server is running and accessible!');
+});
 
 // --- API Endpoints ---
 
@@ -29,7 +30,6 @@ app.get('/api/posts', async (req, res) => {
     const result = await pool.query('SELECT * FROM instagram_posts ORDER BY created_at DESC');
     res.json(result.rows);
   } catch (error) {
-    console.error('Database error fetching posts:', error);
     res.status(500).send({ error: 'Failed to fetch posts.' });
   }
 });
@@ -40,48 +40,8 @@ app.get('/api/leads', async (req, res) => {
         const result = await pool.query('SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC');
         res.json(result.rows);
     } catch (error) {
-        console.error('Database error fetching leads:', error);
         res.status(500).send({ error: 'Failed to fetch leads.' });
     }
-});
-// DEBUG ENDPOINT to test Google Sheet connection
-app.get('/api/debug-sheet', async (req, res) => {
-  console.log('--- Running Google Sheet Debug Test ---');
-  try {
-    // 1. Authenticate with Google
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      },
-      scopes: 'https://www.googleapis.com/auth/spreadsheets.readonly', // Read-only is enough for this test
-    });
-
-    const sheets = google.sheets({ version: 'v4', auth });
-    const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-
-    // 2. Try to read cell A1 from the sheet
-    console.log('Attempting to read from sheet:', SPREADSHEET_ID);
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A1',
-    });
-
-    const cellValue = response.data.values ? response.data.values[0][0] : 'empty';
-    console.log('--- DEBUG TEST SUCCESS ---');
-    
-    // 3. Send back a success message
-    res.status(200).send(`Successfully connected to Google Sheet. The value in cell A1 is: "${cellValue}"`);
-
-  } catch (error) {
-    console.error('--- DEBUG TEST FAILED ---:', error.message);
-    
-    // 4. Send back a detailed error message
-    res.status(500).send({
-      message: 'Failed to connect to Google Sheet.',
-      error: error.message
-    });
-  }
 });
 
 // ADD a new post (from Make.com)
@@ -92,21 +52,49 @@ app.post('/api/posts', async (req, res) => {
     const result = await pool.query('INSERT INTO instagram_posts (post_url, post_date) VALUES ($1, $2) RETURNING *', [post_url, post_date]);
     res.status(201).send({ message: 'Post added successfully!', post: result.rows[0] });
   } catch (error) {
-    console.error('Database error creating post:', error);
     res.status(500).send({ error: 'Failed to add post.' });
   }
 });
 
-// WEBHOOK ENDPOINT to receive leads from Phantom Buster
-app.post('/api/webhook/leads', async (req, res) => {
-  const leads = req.body;
-  console.log(`Received ${leads ? leads.length : 0} leads from Phantom Buster webhook.`);
-  if (!leads || !Array.isArray(leads)) return res.status(400).send('Invalid data format.');
+// TRIGGER a Phantom Buster scrape (Manual approach, can be removed if not used)
+app.post('/api/scrape', async (req, res) => {
+  const { post_url } = req.body;
+  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
+  // This endpoint is part of a manual trigger flow and may be deprecated
+  // in favor of the fully automated webhook flow.
+  res.status(200).send({ message: `Manual scrape trigger is set up but webhook is preferred.` });
+});
 
+
+// --- UPGRADED WEBHOOK ENDPOINT to receive leads from Phantom Buster ---
+app.post('/api/webhook/leads', async (req, res) => {
+  console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
+  console.log('Raw req.body:', JSON.stringify(req.body, null, 2));
+
+  // Phantom Buster sometimes nests the result in a "resultObject" or other properties.
+  // This code will intelligently find the array of leads.
+  let leads = [];
+  if (Array.isArray(req.body)) {
+    leads = req.body;
+  } else if (req.body && Array.isArray(req.body.resultObject)) {
+    leads = req.body.resultObject;
+  }
+
+  if (leads.length === 0) {
+    console.log('Webhook received but contained no leads to process.');
+    return res.status(200).send('Webhook received, no leads to process.');
+  }
+  
+  console.log(`Processing ${leads.length} leads from webhook.`);
+  
   try {
     for (const lead of leads) {
-      if (lead.username && lead.profileUrl) {
-        await pool.query('INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING', [lead.username, lead.profileUrl]);
+      const username = lead.username;
+      const profileUrl = lead.profileUrl;
+      // Ensure we have the necessary data before trying to insert
+      if (username && profileUrl) {
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
+        await pool.query(sql, [username, profileUrl]);
       }
     }
     console.log('Successfully saved leads to the database.');
@@ -117,41 +105,6 @@ app.post('/api/webhook/leads', async (req, res) => {
   }
 });
 
-// TRIGGER a scrape by adding the URL to a Google Sheet
-app.post('/api/scrape', async (req, res) => {
-  const { post_url } = req.body;
-  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
-
-  try {
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: process.env.GOOGLE_CLIENT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      },
-      scopes: 'https://www.googleapis.com/auth/spreadsheets',
-    });
-
-    const sheets = google.sheets({ version: 'v4', auth });
-    const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
-
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A2:A',
-    });
-
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A2',
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: [[post_url]] },
-    });
-    
-    res.status(200).send({ message: `Post URL has been sent to the scraping queue.` });
-  } catch (error) {
-    console.error('Error updating Google Sheet:', error);
-    res.status(500).send({ error: 'Failed to update Google Sheet.' });
-  }
-});
 
 // Start the server
 app.listen(port, () => console.log(`Server is listening on port ${port}`));
