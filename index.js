@@ -2,6 +2,7 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
+const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
@@ -63,14 +64,45 @@ app.get('/api/leads', async (req, res) => {
     }
 });
 
-// --- NEW WEBHOOK ENDPOINT FOR PHANTOM BUSTER ---
-// This endpoint will receive the scraped leads directly from Phantom Buster
+// TRIGGER a Phantom Buster scrape for a specific post
+app.post('/api/scrape', async (req, res) => {
+  const { post_url } = req.body;
+  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
+
+  try {
+    const PHANTOM_ID = '2487161782151911'; // Your confirmed Phantom ID
+    const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
+
+    if (!PHANTOM_BUSTER_API_KEY) throw new Error("Phantom Buster API key is not configured.");
+
+    const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
+    
+    const payload = {
+      argument: {
+        postUrls: [post_url]
+      }
+    };
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
+    };
+
+    await axios.post(endpoint, payload, { headers: headers });
+    res.status(200).send({ message: `Scraping job started for ${post_url}` });
+
+  } catch (error) {
+    console.error('Error launching Phantom Buster:', error.response ? error.response.data : error.message);
+    res.status(500).send({ error: 'Failed to launch Phantom Buster job.' });
+  }
+});
+
+// WEBHOOK ENDPOINT to receive leads from Phantom Buster
 app.post('/api/webhook/leads', async (req, res) => {
-  const leads = req.body; // Phantom Buster sends an array of lead objects
-  console.log(`Received ${leads.length} leads from Phantom Buster webhook.`);
+  const leads = req.body;
+  console.log(`Received ${leads ? leads.length : 0} leads from Phantom Buster webhook.`);
 
   if (!leads || !Array.isArray(leads)) {
-    return res.status(400).send('Invalid data format.');
+    return res.status(400).send('Invalid data format. Expected an array of leads.');
   }
 
   try {
@@ -95,3 +127,4 @@ app.post('/api/webhook/leads', async (req, res) => {
 app.listen(port, () => {
   console.log(`Server is listening on port ${port}`);
 });
+
