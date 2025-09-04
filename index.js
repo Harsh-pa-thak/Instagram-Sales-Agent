@@ -8,11 +8,9 @@ require('dotenv').config();
 // --- App & Middleware Setup ---
 const app = express();
 app.use(cors());
-// Add multiple body parsers to handle any data format Phantom Buster might send
 app.use(express.json({ limit: '50mb' }));
 app.use(express.text({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
 const port = process.env.PORT || 3000;
 
 // --- Database Connection ---
@@ -26,7 +24,7 @@ app.get('/', (req, res) => res.send('Server is running and accessible!'));
 
 // --- API Endpoints ---
 
-// GET all posts
+// GET all posts for the dashboard
 app.get('/api/posts', async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM instagram_posts ORDER BY created_at DESC');
@@ -37,7 +35,7 @@ app.get('/api/posts', async (req, res) => {
   }
 });
 
-// GET all scraped leads
+// GET all scraped leads (this will be updated later to get leads per post)
 app.get('/api/leads', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC');
@@ -61,11 +59,11 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// TRIGGER: Adds a post URL to the Google Sheet to queue a scrape job
+// TRIGGER: Adds a post URL and ID to the Google Sheet queue
 app.post('/api/scrape', async (req, res) => {
-  const { post_url } = req.body;
-  if (!post_url) {
-    return res.status(400).send({ error: 'Post URL is required.' });
+  const { post_url, post_id } = req.body; // <-- NOW ACCEPTS post_id
+  if (!post_url || !post_id) {
+    return res.status(400).send({ error: 'Post URL and Post ID are required.' });
   }
 
   try {
@@ -76,20 +74,27 @@ app.post('/api/scrape', async (req, res) => {
       },
       scopes: 'https://www.googleapis.com/auth/spreadsheets',
     });
-
     const sheets = google.sheets({ version: 'v4', auth });
     const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-    await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'A2:A' });
+    // Update headers in Google Sheet to include postId
+    await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: 'A1:B1',
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [['postUrl', 'postId']] }
+    });
+
+    // Clear old data and add the new job with URL and ID
+    await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'A2:B' });
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: 'A2',
       valueInputOption: 'USER_ENTERED',
-      resource: { values: [[post_url]] },
+      resource: { values: [[post_url, post_id]] }, // <-- NOW SENDS post_id
     });
     
-    res.status(200).send({ message: `Post URL has been sent to the scraping queue. The scrape will run on its schedule.` });
-
+    res.status(200).send({ message: `Scraping job for post ID ${post_id} has been queued.` });
   } catch (error) {
     console.error('Error updating Google Sheet:', error);
     res.status(500).send({ error: 'Failed to update Google Sheet.' });
@@ -97,56 +102,38 @@ app.post('/api/scrape', async (req, res) => {
 });
 
 
-// --- CORRECTED WEBHOOK ENDPOINT ---
+// WEBHOOK ENDPOINT to receive leads from Phantom Buster
 app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
-  
-  let leads = [];
   let data = req.body;
-
   try {
-    // If the body is a buffer or text, try parsing it as JSON first.
-    if (Buffer.isBuffer(data) || typeof data === 'string') {
-        data = JSON.parse(data.toString('utf8'));
-    }
+    if (Buffer.isBuffer(data)) data = JSON.parse(data.toString('utf8'));
+    
+    const resultContainer = data.resultObject || data;
+    if (!resultContainer) return res.status(400).send('Invalid webhook payload.');
 
-    // Now, intelligently find the array of leads within the parsed object.
-    // Phantom Buster sometimes sends the results as a string inside the resultObject key.
-    if (data && typeof data.resultObject === 'string') {
-        console.log('Found stringified resultObject. Parsing now...');
-        leads = JSON.parse(data.resultObject);
-    } else if (data && Array.isArray(data.resultObject)) {
-        console.log('Found array in resultObject.');
-        leads = data.resultObject;
-    } else if (Array.isArray(data)) {
-        console.log('The entire payload is an array of leads.');
-        leads = data;
-    } else {
-        console.log('Webhook payload did not contain a recognizable array of leads.');
-    }
+    // The leads array is now the 'likers' property inside the result object
+    const leads = resultContainer.likers || []; 
+    // The post ID is now passed back with the results
+    const postId = resultContainer.query ? parseInt(resultContainer.query.postId) : null; 
 
-    if (leads.length === 0) {
-        return res.status(200).send('Webhook received, but contained no leads to process.');
-    }
-  
-    console.log(`Successfully parsed ${leads.length} leads. Saving to database...`);
-  
-    let savedCount = 0;
+    if (leads.length === 0) return res.status(200).send('Webhook received, no leads to process.');
+    if (!postId) return res.status(400).send('Webhook received, but was missing the Post ID.');
+    
+    console.log(`Processing ${leads.length} leads for Post ID: ${postId}.`);
+    
     for (const lead of leads) {
-      const username = lead.username;
-      const profileUrl = lead.profileUrl || lead.profile_url || lead.profileLink;
+      const { username, profileUrl } = lead;
       if (username && profileUrl) {
-        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
-        const result = await pool.query(sql, [username, profileUrl]);
-        if (result.rowCount > 0) {
-            savedCount++;
-        }
+        // <-- NOW INSERTS with post_id
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url, post_id) VALUES ($1, $2, $3) ON CONFLICT (username) DO NOTHING';
+        await pool.query(sql, [username, profileUrl, postId]);
       }
     }
-    console.log(`Successfully saved ${savedCount} new leads to the database.`);
+    console.log('Successfully saved leads to the database.');
     res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
-    console.error('Database error or parsing error during webhook import:', error);
+    console.error('Error processing webhook:', error);
     res.status(500).send('Error processing webhook data.');
   }
 });
