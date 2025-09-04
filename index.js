@@ -112,62 +112,54 @@ app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
   
   let leads = [];
-  let rawBody = req.body;
+  let data = req.body;
 
-  // Step 1: Handle cases where the body is a buffer or plain text string
-  if (Buffer.isBuffer(rawBody)) {
-    rawBody = rawBody.toString('utf8');
-  }
-  if (typeof rawBody === 'string' && rawBody.length > 0) {
-    try {
-      rawBody = JSON.parse(rawBody);
-    } catch (e) {
-      console.error('Webhook body was a non-JSON string, cannot parse.');
-      return res.status(400).send('Invalid data format.');
-    }
-  }
-
-  // Step 2: Intelligently find the array of leads inside the parsed object
-  if (Array.isArray(rawBody)) {
-    leads = rawBody;
-  } else if (rawBody && Array.isArray(rawBody.resultObject)) {
-    leads = rawBody.resultObject;
-  } else {
-      console.log('Webhook payload did not contain a recognizable array of leads.');
-  }
-  
-  if (leads.length === 0) {
-    return res.status(200).send('Webhook received, no leads to process.');
-  }
-  
   try {
-    // Step 3: Get the post ID for this job from our database
-    const jobResult = await pool.query('SELECT post_id FROM active_scrape_job ORDER BY created_at DESC LIMIT 1');
-    if (jobResult.rows.length === 0) {
-      throw new Error("No active scrape job found to associate leads with.");
+    // If the body is a buffer or text, try parsing it as JSON first.
+    if (Buffer.isBuffer(data) || typeof data === 'string') {
+        data = JSON.parse(data.toString('utf8'));
     }
-    const postId = jobResult.rows[0].post_id;
-    console.log(`Processing ${leads.length} leads for active post ID: ${postId}`);
-    
-    // Step 4: Loop through the leads and save them to the database
+
+    // Now, intelligently find the array of leads within the parsed object.
+    // Phantom Buster sometimes sends the results as a string inside the resultObject key.
+    if (data && typeof data.resultObject === 'string') {
+        console.log('Found stringified resultObject. Parsing now...');
+        leads = JSON.parse(data.resultObject);
+    } else if (data && Array.isArray(data.resultObject)) {
+        console.log('Found array in resultObject.');
+        leads = data.resultObject;
+    } else if (Array.isArray(data)) {
+        console.log('The entire payload is an array of leads.');
+        leads = data;
+    } else {
+        console.log('Webhook payload did not contain a recognizable array of leads.');
+    }
+
+    if (leads.length === 0) {
+        return res.status(200).send('Webhook received, but contained no leads to process.');
+    }
+  
+    console.log(`Successfully parsed ${leads.length} leads. Saving to database...`);
+  
+    let savedCount = 0;
     for (const lead of leads) {
       const username = lead.username;
-      const profileUrl = lead.profileUrl;
-      if (username && profileUrl && postId) {
-        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url, post_id) VALUES ($1, $2, $3) ON CONFLICT (username) DO UPDATE SET last_updated = NOW(), post_id = $3';
-        await pool.query(sql, [username, profileUrl, postId]);
+      const profileUrl = lead.profileUrl || lead.profile_url || lead.profileLink;
+      if (username && profileUrl) {
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
+        const result = await pool.query(sql, [username, profileUrl]);
+        if (result.rowCount > 0) {
+            savedCount++;
+        }
       }
     }
-
-    await pool.query('DELETE FROM active_scrape_job WHERE post_id = $1', [postId]);
-    console.log('Successfully saved leads and cleaned up active job.');
+    console.log(`Successfully saved ${savedCount} new leads to the database.`);
     res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
-    console.error('Database error during webhook import:', error);
+    console.error('Database error or parsing error during webhook import:', error);
     res.status(500).send('Error processing webhook data.');
   }
 });
-
 
 // --- Start the Server ---
 app.listen(port, () => console.log(`Server is listening on port ${port}`));
