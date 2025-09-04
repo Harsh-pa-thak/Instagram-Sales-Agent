@@ -97,47 +97,56 @@ app.post('/api/scrape', async (req, res) => {
 });
 
 
-// WEBHOOK ENDPOINT to automatically receive leads from Phantom Buster
+// --- CORRECTED WEBHOOK ENDPOINT ---
 app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
   
   let leads = [];
-  let rawBody = req.body;
+  let data = req.body;
 
-  // Intelligently handle different data formats from the webhook
-  if (typeof rawBody === 'string' && rawBody.length > 0) {
-    try {
-      rawBody = JSON.parse(rawBody);
-    } catch (e) { /* Ignore if it's not a parsable string */ }
-  }
-
-  if (Array.isArray(rawBody)) {
-    leads = rawBody;
-  } else if (rawBody && Array.isArray(rawBody.resultObject)) {
-    leads = rawBody.resultObject;
-  } else {
-      console.log('Webhook payload did not contain a recognizable array of leads.');
-  }
-
-  if (leads.length === 0) {
-    return res.status(200).send('Webhook received, but contained no leads to process.');
-  }
-  
-  console.log(`Processing ${leads.length} leads from webhook.`);
-  
   try {
+    // If the body is a buffer or text, try parsing it as JSON first.
+    if (Buffer.isBuffer(data) || typeof data === 'string') {
+        data = JSON.parse(data.toString('utf8'));
+    }
+
+    // Now, intelligently find the array of leads within the parsed object.
+    // Phantom Buster sometimes sends the results as a string inside the resultObject key.
+    if (data && typeof data.resultObject === 'string') {
+        console.log('Found stringified resultObject. Parsing now...');
+        leads = JSON.parse(data.resultObject);
+    } else if (data && Array.isArray(data.resultObject)) {
+        console.log('Found array in resultObject.');
+        leads = data.resultObject;
+    } else if (Array.isArray(data)) {
+        console.log('The entire payload is an array of leads.');
+        leads = data;
+    } else {
+        console.log('Webhook payload did not contain a recognizable array of leads.');
+    }
+
+    if (leads.length === 0) {
+        return res.status(200).send('Webhook received, but contained no leads to process.');
+    }
+  
+    console.log(`Successfully parsed ${leads.length} leads. Saving to database...`);
+  
+    let savedCount = 0;
     for (const lead of leads) {
       const username = lead.username;
       const profileUrl = lead.profileUrl || lead.profile_url || lead.profileLink;
       if (username && profileUrl) {
         const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
-        await pool.query(sql, [username, profileUrl]);
+        const result = await pool.query(sql, [username, profileUrl]);
+        if (result.rowCount > 0) {
+            savedCount++;
+        }
       }
     }
-    console.log('Successfully saved leads to the database.');
+    console.log(`Successfully saved ${savedCount} new leads to the database.`);
     res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
-    console.error('Database error during webhook import:', error);
+    console.error('Database error or parsing error during webhook import:', error);
     res.status(500).send('Error processing webhook data.');
   }
 });
