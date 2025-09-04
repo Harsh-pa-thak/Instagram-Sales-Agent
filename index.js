@@ -9,6 +9,7 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 app.use(cors());
+// Use Render's port if available, otherwise default to 3000
 const port = process.env.PORT || 3000;
 
 // Database connection pool
@@ -94,13 +95,11 @@ app.post('/api/scrape', async (req, res) => {
     const sheets = google.sheets({ version: 'v4', auth });
     const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-    // Clear the sheet (A2:A clears all rows except the header)
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SPREADSHEET_ID,
       range: 'A2:A',
     });
 
-    // Add the new post URL to cell A2
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: 'A2',
