@@ -1,33 +1,41 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
-const { google } = require('googleapis');
+const { google } = require('googleapis'); // For connecting to Google Sheets
 const cors = require('cors');
-require('dotenv').config();
+require('dotenv').config(); // To read secret keys from the environment
 
 // --- App & Middleware Setup ---
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(cors()); // Enable Cross-Origin Resource Sharing for your frontend
+app.use(express.json({ limit: '50mb' })); // Enable the app to parse large JSON bodies
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // For other data formats
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3000; // Use Render's port or 3000 for local dev
 
 // --- Database Connection ---
+// Create a connection pool to your Neon PostgreSQL database
+// It securely uses the connection string from your Render environment variables
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: {
+    rejectUnauthorized: false // Required for connecting to Neon
+  }
 });
 
 // --- Main Route ---
-app.get('/', (req, res) => res.send('Server is running!'));
+// A simple root route to confirm that the server is running
+app.get('/', (req, res) => {
+  res.send('Server is running and accessible!');
+});
 
-// --- API Endpoints ---
+// --- API Endpoints for the Dashboard ---
 
-// GET all posts
+// GET all posts to display on the frontend dashboard
 app.get('/api/posts', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM instagram_posts ORDER BY created_at DESC');
+    const sql = 'SELECT * FROM instagram_posts ORDER BY created_at DESC';
+    const result = await pool.query(sql);
     res.json(result.rows);
   } catch (error) {
     console.error('Database error fetching posts:', error);
@@ -35,7 +43,7 @@ app.get('/api/posts', async (req, res) => {
   }
 });
 
-// GET all scraped leads
+// GET all scraped leads to display on the frontend dashboard
 app.get('/api/leads', async (req, res) => {
     try {
         const result = await pool.query('SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC');
@@ -46,7 +54,9 @@ app.get('/api/leads', async (req, res) => {
     }
 });
 
-// ADD a new post (from Make.com)
+// --- Automation Endpoints ---
+
+// ADD a new post to the database (called by Make.com)
 app.post('/api/posts', async (req, res) => {
   const { post_url, post_date } = req.body;
   if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
@@ -59,38 +69,41 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// TRIGGER: Adds a post URL and ID to the Google Sheet queue
+// TRIGGER: Adds a post URL and ID to the Google Sheet to queue a scrape job
 app.post('/api/scrape', async (req, res) => {
-  const { post_url, post_id } = req.body; // Now we get post_id as well
+  const { post_url, post_id } = req.body; // Receive both the URL and the post's unique ID
   if (!post_url || !post_id) {
     return res.status(400).send({ error: 'Post URL and Post ID are required.' });
   }
 
   try {
+    // 1. Authenticate with Google Sheets using the keys stored securely on Render
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        // The private key from Render's environment needs its newline characters restored
         private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
       },
       scopes: 'https://www.googleapis.com/auth/spreadsheets',
     });
 
-    const sheets = google.sheets({ version: 'v4', auth });
+    const client = await auth.getClient();
+    const sheets = google.sheets({ version: 'v4', auth: client });
     const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-    // Clear the old job
+    // 2. Clear the old job from the sheet to make space for the new one
     await sheets.spreadsheets.values.clear({
       spreadsheetId: SPREADSHEET_ID,
-      range: 'A2:B', // Clear both columns
+      range: 'A2:B', // Clear both columns to ensure only one job runs
     });
     
-    // Add the new job with URL and ID
+    // 3. Add the new post URL and post ID to the sheet, where Phantom Buster will find them
     await sheets.spreadsheets.values.update({
       spreadsheetId: SPREADSHEET_ID,
       range: 'A2',
       valueInputOption: 'USER_ENTERED',
       resource: {
-        values: [[post_url, post_id]], // Write both URL and ID
+        values: [[post_url, post_id]], // Write both the URL and the ID
       },
     });
     
@@ -103,13 +116,14 @@ app.post('/api/scrape', async (req, res) => {
 });
 
 
-// WEBHOOK ENDPOINT to receive leads from Phantom Buster
+// WEBHOOK ENDPOINT to automatically receive leads from Phantom Buster
 app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
   
   let leads = [];
   const rawBody = req.body;
 
+  // Intelligently find the array of leads, as Phantom Buster's format can vary
   if (rawBody && Array.isArray(rawBody.resultObject)) {
     leads = rawBody.resultObject;
   } else if (Array.isArray(rawBody)) {
@@ -120,8 +134,9 @@ app.post('/api/webhook/leads', async (req, res) => {
     return res.status(200).send('Webhook received, no leads to process.');
   }
   
-  // The post_id will be the same for all leads in this batch
-  const postId = leads[0].postId; // Get the post_id from the first lead
+  // The post_id will be the same for all leads in this batch.
+  // We get it from the metadata Phantom Buster passes through from the Google Sheet.
+  const postId = leads[0].postId; 
   console.log(`Processing ${leads.length} leads for post ID: ${postId}`);
   
   try {
@@ -130,7 +145,8 @@ app.post('/api/webhook/leads', async (req, res) => {
       const profileUrl = lead.profileUrl;
       // We must have a postId to link the lead to a post
       if (username && profileUrl && postId) {
-        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url, post_id) VALUES ($1, $2, $3) ON CONFLICT (username) DO UPDATE SET last_updated = NOW()';
+        // Updated query to also insert the post_id
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url, post_id) VALUES ($1, $2, $3) ON CONFLICT (username) DO UPDATE SET last_updated = NOW(), post_id = $3';
         await pool.query(sql, [username, profileUrl, postId]);
       }
     }
@@ -143,6 +159,6 @@ app.post('/api/webhook/leads', async (req, res) => {
 });
 
 
-// Start the server
+// --- Start the Server ---
 app.listen(port, () => console.log(`Server is listening on port ${port}`));
 
