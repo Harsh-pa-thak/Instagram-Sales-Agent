@@ -1,8 +1,8 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
-const { google } = require('googleapis'); // <-- NEW
 const cors = require('cors');
+const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
@@ -11,7 +11,7 @@ app.use(express.json());
 app.use(cors());
 const port = process.env.PORT || 3000;
 
-// Database connection pool (remains the same)
+// Database connection pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -19,7 +19,7 @@ const pool = new Pool({
   }
 });
 
-// --- Main Routes ---
+// --- Main Route ---
 app.get('/', (req, res) => {
   res.send('Server is running and accessible!');
 });
@@ -40,66 +40,56 @@ app.get('/api/posts', async (req, res) => {
 
 // ADD a new post (from Make.com)
 app.post('/api/posts', async (req, res) => {
-  // ... (this endpoint remains the same)
+  const { post_url, post_date } = req.body;
+  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
+  try {
+    const sql = 'INSERT INTO instagram_posts (post_url, post_date) VALUES ($1, $2) RETURNING *';
+    const result = await pool.query(sql, [post_url, post_date]);
+    res.status(201).send({ message: 'Post added successfully!', post: result.rows[0] });
+  } catch (error) {
+    console.error('Database error creating post:', error);
+    res.status(500).send({ error: 'Failed to add post.' });
+  }
 });
 
+// GET all scraped leads for the dashboard
+app.get('/api/leads', async (req, res) => {
+    try {
+        const sql = 'SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC';
+        const result = await pool.query(sql);
+        res.json(result.rows);
+    } catch (error) {
+        console.error('Database error fetching leads:', error);
+        res.status(500).send({ error: 'Failed to fetch leads.' });
+    }
+});
 
-// --- UPDATED SCRAPE ENDPOINT ---
+// TRIGGER a Phantom Buster scrape
 app.post('/api/scrape', async (req, res) => {
   const { post_url } = req.body;
-  if (!post_url) {
-    return res.status(400).send({ error: 'Post URL is required.' });
-  }
+  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
 
   try {
-    // 1. Authenticate with Google Sheets
-    const auth = new google.auth.GoogleAuth({
-      keyFile: 'credentials.json',
-      scopes: 'https://www.googleapis.com/auth/spreadsheets',
-    });
-    const client = await auth.getClient();
-    const sheets = google.sheets({ version: 'v4', auth: client });
+    const PHANTOM_ID = '2487161782151911'; // Your Phantom ID
+    const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
 
-    // 2. Define your Sheet ID and range
-    const SPREADSHEET_ID = '1l8AVBYE88vGLZUDQ5S_COEkHhpdNe9t7N7_Ak8rOIdA';// <-- IMPORTANT: UPDATE THIS
+    if (!PHANTOM_BUSTER_API_KEY) throw new Error("Phantom Buster API key is not configured.");
 
-    // 3. Clear the sheet first
-    await sheets.spreadsheets.values.clear({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A2:A', // Clears everything from the second row down
-    });
-    
-    // 4. Add the new post URL to the sheet
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'A2', // Puts the new URL in the second row
-      valueInputOption: 'USER_ENTERED',
-      resource: {
-        values: [[post_url]],
-      },
-    });
-    // API endpoint to GET all scraped leads
-  app.get('/api/leads', async (req, res) => {
-    try {
-      const sql = 'SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC';
-      const result = await pool.query(sql);
-      res.json(result.rows); // Send the list of leads as JSON
-    } catch (error) {
-      console.error('Database error fetching leads:', error);
-      res.status(500).send({ error: 'Failed to fetch leads.' });
-    }
-  });
-    
-    // We are no longer launching Phantom Buster directly from here.
-    // Phantom Buster will be set up to launch automatically on a schedule.
-    res.status(200).send({ message: `Post URL ${post_url} has been updated in the Google Sheet.` });
+    const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
+    const payload = { argument: { postUrls: [post_url] } };
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
+    };
+
+    await axios.post(endpoint, payload, { headers: headers });
+    res.status(200).send({ message: `Scraping job started for ${post_url}` });
 
   } catch (error) {
-    console.error('Error updating Google Sheet:', error);
-    res.status(500).send({ error: 'Failed to update Google Sheet.' });
+    console.error('Error launching Phantom Buster:', error.response ? error.response.data : error.message);
+    res.status(500).send({ error: 'Failed to launch Phantom Buster job.' });
   }
 });
-
 
 // Start the server
 app.listen(port, () => {
