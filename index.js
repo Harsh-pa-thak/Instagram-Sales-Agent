@@ -8,8 +8,10 @@ require('dotenv').config(); // To read secret keys from the environment
 // --- App & Middleware Setup ---
 const app = express();
 app.use(cors()); // Enable Cross-Origin Resource Sharing for your frontend
-app.use(express.json({ limit: '50mb' })); // Enable the app to parse large JSON bodies
-app.use(express.urlencoded({ extended: true, limit: '50mb' })); // For other data formats
+// Use multiple body parsers to handle different webhook formats from Phantom Buster
+app.use(express.json({ limit: '50mb' }));
+app.use(express.text({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 const port = process.env.PORT || 3000; // Use Render's port or 3000 for local dev
 
@@ -71,14 +73,12 @@ app.post('/api/scrape', async (req, res) => {
   }
 
   try {
-    // --- NEW LOGIC: Record the active job in our database ---
-    // 1. Clear any previous jobs
+    // Record the active job in our database
     await pool.query('DELETE FROM active_scrape_job');
-    // 2. Insert the new job
     await pool.query('INSERT INTO active_scrape_job (post_id) VALUES ($1)', [post_id]);
     console.log(`Active scrape job recorded for post ID: ${post_id}`);
 
-    // --- Google Sheets Logic (remains the same) ---
+    // Update the Google Sheet with the new job
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -112,12 +112,28 @@ app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
   
   let leads = [];
-  const rawBody = req.body;
+  let rawBody = req.body;
 
-  if (rawBody && Array.isArray(rawBody.resultObject)) {
-    leads = rawBody.resultObject;
-  } else if (Array.isArray(rawBody)) {
+  // Step 1: Handle cases where the body is a buffer or plain text string
+  if (Buffer.isBuffer(rawBody)) {
+    rawBody = rawBody.toString('utf8');
+  }
+  if (typeof rawBody === 'string' && rawBody.length > 0) {
+    try {
+      rawBody = JSON.parse(rawBody);
+    } catch (e) {
+      console.error('Webhook body was a non-JSON string, cannot parse.');
+      return res.status(400).send('Invalid data format.');
+    }
+  }
+
+  // Step 2: Intelligently find the array of leads inside the parsed object
+  if (Array.isArray(rawBody)) {
     leads = rawBody;
+  } else if (rawBody && Array.isArray(rawBody.resultObject)) {
+    leads = rawBody.resultObject;
+  } else {
+      console.log('Webhook payload did not contain a recognizable array of leads.');
   }
   
   if (leads.length === 0) {
@@ -125,7 +141,7 @@ app.post('/api/webhook/leads', async (req, res) => {
   }
   
   try {
-    // --- NEW LOGIC: Get the post ID from our active_scrape_job table ---
+    // Step 3: Get the post ID for this job from our database
     const jobResult = await pool.query('SELECT post_id FROM active_scrape_job ORDER BY created_at DESC LIMIT 1');
     if (jobResult.rows.length === 0) {
       throw new Error("No active scrape job found to associate leads with.");
@@ -133,6 +149,7 @@ app.post('/api/webhook/leads', async (req, res) => {
     const postId = jobResult.rows[0].post_id;
     console.log(`Processing ${leads.length} leads for active post ID: ${postId}`);
     
+    // Step 4: Loop through the leads and save them to the database
     for (const lead of leads) {
       const username = lead.username;
       const profileUrl = lead.profileUrl;
@@ -142,10 +159,8 @@ app.post('/api/webhook/leads', async (req, res) => {
       }
     }
 
-    // Optional: Clean up the job table after processing
     await pool.query('DELETE FROM active_scrape_job WHERE post_id = $1', [postId]);
-
-    console.log('Successfully saved leads to the database.');
+    console.log('Successfully saved leads and cleaned up active job.');
     res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
     console.error('Database error during webhook import:', error);
