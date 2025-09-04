@@ -2,7 +2,6 @@
 const express = require('express');
 const { Pool } = require('pg');
 const cors = require('cors');
-const axios = require('axios');
 require('dotenv').config();
 
 // Create the Express app
@@ -64,32 +63,33 @@ app.get('/api/leads', async (req, res) => {
     }
 });
 
-// TRIGGER a Phantom Buster scrape
-app.post('/api/scrape', async (req, res) => {
-  const { post_url } = req.body;
-  if (!post_url) return res.status(400).send({ error: 'Post URL is required.' });
+// --- NEW WEBHOOK ENDPOINT FOR PHANTOM BUSTER ---
+// This endpoint will receive the scraped leads directly from Phantom Buster
+app.post('/api/webhook/leads', async (req, res) => {
+  const leads = req.body; // Phantom Buster sends an array of lead objects
+  console.log(`Received ${leads.length} leads from Phantom Buster webhook.`);
+
+  if (!leads || !Array.isArray(leads)) {
+    return res.status(400).send('Invalid data format.');
+  }
 
   try {
-    const PHANTOM_ID = '2487161782151911'; // Your Phantom ID
-    const PHANTOM_BUSTER_API_KEY = process.env.PHANTOM_BUSTER_API_KEY;
-
-    if (!PHANTOM_BUSTER_API_KEY) throw new Error("Phantom Buster API key is not configured.");
-
-    const endpoint = `https://api.phantombuster.com/api/v2/phantoms/${PHANTOM_ID}/launch`;
-    const payload = { argument: { postUrls: [post_url] } };
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-Phantombuster-Key': PHANTOM_BUSTER_API_KEY
-    };
-
-    await axios.post(endpoint, payload, { headers: headers });
-    res.status(200).send({ message: `Scraping job started for ${post_url}` });
-
+    for (const lead of leads) {
+      const username = lead.username;
+      const profileUrl = lead.profileUrl;
+      if (username && profileUrl) {
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
+        await pool.query(sql, [username, profileUrl]);
+      }
+    }
+    console.log('Successfully saved leads to the database.');
+    res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
-    console.error('Error launching Phantom Buster:', error.response ? error.response.data : error.message);
-    res.status(500).send({ error: 'Failed to launch Phantom Buster job.' });
+    console.error('Database error during webhook import:', error);
+    res.status(500).send('Error processing webhook data.');
   }
 });
+
 
 // Start the server
 app.listen(port, () => {
