@@ -78,6 +78,17 @@ app.post('/api/scrape', async (req, res) => {
         values: [[post_url]],
       },
     });
+    // API endpoint to GET all scraped leads
+  app.get('/api/leads', async (req, res) => {
+    try {
+      const sql = 'SELECT * FROM instagram_agent_leads ORDER BY last_updated DESC';
+      const result = await pool.query(sql);
+      res.json(result.rows); // Send the list of leads as JSON
+    } catch (error) {
+      console.error('Database error fetching leads:', error);
+      res.status(500).send({ error: 'Failed to fetch leads.' });
+    }
+  });
     
     // We are no longer launching Phantom Buster directly from here.
     // Phantom Buster will be set up to launch automatically on a schedule.
