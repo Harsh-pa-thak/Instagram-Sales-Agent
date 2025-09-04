@@ -44,6 +44,45 @@ app.get('/api/leads', async (req, res) => {
         res.status(500).send({ error: 'Failed to fetch leads.' });
     }
 });
+// DEBUG ENDPOINT to test Google Sheet connection
+app.get('/api/debug-sheet', async (req, res) => {
+  console.log('--- Running Google Sheet Debug Test ---');
+  try {
+    // 1. Authenticate with Google
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: process.env.GOOGLE_CLIENT_EMAIL,
+        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      },
+      scopes: 'https://www.googleapis.com/auth/spreadsheets.readonly', // Read-only is enough for this test
+    });
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
+
+    // 2. Try to read cell A1 from the sheet
+    console.log('Attempting to read from sheet:', SPREADSHEET_ID);
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'A1',
+    });
+
+    const cellValue = response.data.values ? response.data.values[0][0] : 'empty';
+    console.log('--- DEBUG TEST SUCCESS ---');
+    
+    // 3. Send back a success message
+    res.status(200).send(`Successfully connected to Google Sheet. The value in cell A1 is: "${cellValue}"`);
+
+  } catch (error) {
+    console.error('--- DEBUG TEST FAILED ---:', error.message);
+    
+    // 4. Send back a detailed error message
+    res.status(500).send({
+      message: 'Failed to connect to Google Sheet.',
+      error: error.message
+    });
+  }
+});
 
 // ADD a new post (from Make.com)
 app.post('/api/posts', async (req, res) => {
