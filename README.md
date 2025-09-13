@@ -225,4 +225,7 @@ You can also use the provided `test.http` as a sample request file.
 
 ## License
 
-ISC
+This project is licensed under the ISC License.
+
+- See the full text in the [`LICENSE`](./LICENSE) file.
+- © 2025 Harsh Pathak. Permission is granted to use, copy, modify, and distribute this software with or without fee, provided the copyright and permission notices are included.
