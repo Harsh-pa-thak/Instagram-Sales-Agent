@@ -1,17 +1,19 @@
 // Import necessary packages
 const express = require('express');
 const { Pool } = require('pg');
-const { google } = require('googleapis'); // For connecting to Google Sheets
+const { google } = require('googleapis');
 const cors = require('cors');
-require('dotenv').config(); // To read secret keys from the environment
+require('dotenv').config();
 
 // --- App & Middleware Setup ---
 const app = express();
-app.use(cors()); // Enable Cross-Origin Resource Sharing for your frontend
-app.use(express.json({ limit: '50mb' })); // Enable the app to parse large JSON bodies
-app.use(express.urlencoded({ extended: true, limit: '50mb' })); // For other data formats
+app.use(cors());
+// Add multiple body parsers to handle any data format Phantom Buster might send
+app.use(express.json({ limit: '50mb' }));
+app.use(express.text({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-const port = process.env.PORT || 3000; // Use Render's port or 3000 for local dev
+const port = process.env.PORT || 3000;
 
 // --- Database Connection ---
 const pool = new Pool({
@@ -20,11 +22,9 @@ const pool = new Pool({
 });
 
 // --- Main Route ---
-app.get('/', (req, res) => {
-  res.send('Server is running and accessible!');
-});
+app.get('/', (req, res) => res.send('Server is running and accessible!'));
 
-// --- API Endpoints for the Dashboard ---
+// --- API Endpoints ---
 
 // GET all posts
 app.get('/api/posts', async (req, res) => {
@@ -48,8 +48,6 @@ app.get('/api/leads', async (req, res) => {
     }
 });
 
-// --- Automation Endpoints ---
-
 // ADD a new post (from Make.com)
 app.post('/api/posts', async (req, res) => {
   const { post_url, post_date } = req.body;
@@ -63,22 +61,14 @@ app.post('/api/posts', async (req, res) => {
   }
 });
 
-// TRIGGER: Adds a post URL to the Google Sheet AND records the active job
+// TRIGGER: Adds a post URL to the Google Sheet to queue a scrape job
 app.post('/api/scrape', async (req, res) => {
-  const { post_url, post_id } = req.body;
-  if (!post_url || !post_id) {
-    return res.status(400).send({ error: 'Post URL and Post ID are required.' });
+  const { post_url } = req.body;
+  if (!post_url) {
+    return res.status(400).send({ error: 'Post URL is required.' });
   }
 
   try {
-    // --- NEW LOGIC: Record the active job in our database ---
-    // 1. Clear any previous jobs
-    await pool.query('DELETE FROM active_scrape_job');
-    // 2. Insert the new job
-    await pool.query('INSERT INTO active_scrape_job (post_id) VALUES ($1)', [post_id]);
-    console.log(`Active scrape job recorded for post ID: ${post_id}`);
-
-    // --- Google Sheets Logic (remains the same) ---
     const auth = new google.auth.GoogleAuth({
       credentials: {
         client_email: process.env.GOOGLE_CLIENT_EMAIL,
@@ -98,62 +88,68 @@ app.post('/api/scrape', async (req, res) => {
       resource: { values: [[post_url]] },
     });
     
-    res.status(200).send({ message: `Job for post ${post_id} has been sent to the scraping queue.` });
+    res.status(200).send({ message: `Post URL has been sent to the scraping queue. The scrape will run on its schedule.` });
 
   } catch (error) {
-    console.error('Error in /api/scrape:', error);
-    res.status(500).send({ error: 'Failed to queue scrape job.' });
+    console.error('Error updating Google Sheet:', error);
+    res.status(500).send({ error: 'Failed to update Google Sheet.' });
   }
 });
 
 
-// WEBHOOK ENDPOINT to receive leads from Phantom Buster
+// --- CORRECTED WEBHOOK ENDPOINT ---
 app.post('/api/webhook/leads', async (req, res) => {
   console.log('--- PHANTOM BUSTER WEBHOOK RECEIVED ---');
   
   let leads = [];
-  const rawBody = req.body;
+  let data = req.body;
 
-  if (rawBody && Array.isArray(rawBody.resultObject)) {
-    leads = rawBody.resultObject;
-  } else if (Array.isArray(rawBody)) {
-    leads = rawBody;
-  }
-  
-  if (leads.length === 0) {
-    return res.status(200).send('Webhook received, no leads to process.');
-  }
-  
   try {
-    // --- NEW LOGIC: Get the post ID from our active_scrape_job table ---
-    const jobResult = await pool.query('SELECT post_id FROM active_scrape_job ORDER BY created_at DESC LIMIT 1');
-    if (jobResult.rows.length === 0) {
-      throw new Error("No active scrape job found to associate leads with.");
+    // If the body is a buffer or text, try parsing it as JSON first.
+    if (Buffer.isBuffer(data) || typeof data === 'string') {
+        data = JSON.parse(data.toString('utf8'));
     }
-    const postId = jobResult.rows[0].post_id;
-    console.log(`Processing ${leads.length} leads for active post ID: ${postId}`);
-    
+
+    // Now, intelligently find the array of leads within the parsed object.
+    // Phantom Buster sometimes sends the results as a string inside the resultObject key.
+    if (data && typeof data.resultObject === 'string') {
+        console.log('Found stringified resultObject. Parsing now...');
+        leads = JSON.parse(data.resultObject);
+    } else if (data && Array.isArray(data.resultObject)) {
+        console.log('Found array in resultObject.');
+        leads = data.resultObject;
+    } else if (Array.isArray(data)) {
+        console.log('The entire payload is an array of leads.');
+        leads = data;
+    } else {
+        console.log('Webhook payload did not contain a recognizable array of leads.');
+    }
+
+    if (leads.length === 0) {
+        return res.status(200).send('Webhook received, but contained no leads to process.');
+    }
+  
+    console.log(`Successfully parsed ${leads.length} leads. Saving to database...`);
+  
+    let savedCount = 0;
     for (const lead of leads) {
       const username = lead.username;
-      const profileUrl = lead.profileUrl;
-      if (username && profileUrl && postId) {
-        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url, post_id) VALUES ($1, $2, $3) ON CONFLICT (username) DO UPDATE SET last_updated = NOW(), post_id = $3';
-        await pool.query(sql, [username, profileUrl, postId]);
+      const profileUrl = lead.profileUrl || lead.profile_url || lead.profileLink;
+      if (username && profileUrl) {
+        const sql = 'INSERT INTO instagram_agent_leads (username, profile_url) VALUES ($1, $2) ON CONFLICT (username) DO NOTHING';
+        const result = await pool.query(sql, [username, profileUrl]);
+        if (result.rowCount > 0) {
+            savedCount++;
+        }
       }
     }
-
-    // Optional: Clean up the job table after processing
-    await pool.query('DELETE FROM active_scrape_job WHERE post_id = $1', [postId]);
-
-    console.log('Successfully saved leads to the database.');
+    console.log(`Successfully saved ${savedCount} new leads to the database.`);
     res.status(200).send('Webhook received and leads processed.');
   } catch (error) {
-    console.error('Database error during webhook import:', error);
+    console.error('Database error or parsing error during webhook import:', error);
     res.status(500).send('Error processing webhook data.');
   }
 });
 
-
-// --- Start the Server ---
+// Start the server
 app.listen(port, () => console.log(`Server is listening on port ${port}`));
-
